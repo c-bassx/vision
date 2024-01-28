@@ -57,6 +57,18 @@ def absolute_distance(x, y, z, params):
     j = (y - cy) * z / fy
     return i, j, z
 
+def calculate_angles(x, y, z):
+    pitch = np.arctan2(y, np.sqrt(x**2 + z**2))  # x-axis rotation
+    yaw = np.arctan2(x, z)                      #  y-axis rotation
+    roll = np.arctan2(np.sqrt(x**2 + y**2), z)  #  z-axis rotation
+
+    # Convert radians to degrees
+    pitch = np.degrees(pitch)
+    yaw = np.degrees(yaw)
+    roll = np.degrees(roll)
+
+    return pitch, yaw, roll
+
 try:
     with dai.Device(pipeline) as device:
         # Camera intrinsics
@@ -101,6 +113,7 @@ try:
 
                 i, j, k = absolute_distance(xmin, ymin, z, params=(fx, fy, cx, cy))
                 distance = np.sqrt(i**2 + j**2 + k**2)
+                pitch, yaw, roll = calculate_angles(i, j, k)
 
                 cv2.rectangle(
                     frame, (xmin, ymin), (xmax, ymax), color=(255, 0, 0), thickness=2
@@ -109,6 +122,11 @@ try:
                 cv2.putText( 
                     frame, f"3D Pos: ({i:.2f}, {j:.2f}, {k:.2f}), Distance: {distance:.2f} mm",
                     (xmin, ymin - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255),
+                )
+
+                cv2.putText(
+                    frame, f"Pitch: {pitch:.2f}°, Yaw: {yaw:.2f}°, Roll: {roll:.2f}°",
+                    (xmin, ymin - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255)
                 )
 
             cv2.imshow("RGB", frame)
