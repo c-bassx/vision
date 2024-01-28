@@ -8,7 +8,7 @@ import sys
 pipeline = dai.Pipeline()
 
 # Variables
-nn_path = "README.md"
+nn_path = ""
 preview_width = 300
 preview_height = 300
 
@@ -96,7 +96,7 @@ try:
                 if depth_values.size == 0 or np.any(depth_values <= 0):
                     print(f"Warning: Invalid depth data for detection at ({xmin}, {ymin}).")
                     continue
-                
+
                 z = np.mean(depth_values)
 
                 i, j, k = absolute_distance(xmin, ymin, z, params=(fx, fy, cx, cy))
