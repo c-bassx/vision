@@ -69,6 +69,37 @@ def calculate_angles(x, y, z):
 
     return pitch, yaw, roll
 
+def get_object_data(detections, depth_frame, fx, fy, cx, cy):
+    object_data = []
+    for detection in detections:
+        xmin = int(detection.xmin * 300)
+        ymin = int(detection.ymin * 300)
+        xmax = int(detection.xmax * 300)
+        ymax = int(detection.ymax * 300)
+
+        depth_values = depth_frame[ymin:ymax, xmin:xmax]
+
+        if depth_values.size == 0 or np.any(depth_values <= 0):
+            print(f"Warning: Invalid depth data for detection at ({xmin}, {ymin}).")
+            continue
+
+        z = np.mean(depth_values)
+        i, j, k = absolute_distance(xmin, ymin, z, params=(fx, fy, cx, cy))
+        distance = np.sqrt(i**2 + j**2 + k**2)
+        pitch, yaw, roll = calculate_angles(i, j, k)
+
+        object_data.append({
+            "x": i,
+            "y": j,
+            "z": k,
+            "distance": distance,
+            "pitch": pitch,
+            "yaw": yaw,
+            "roll": roll
+        })
+
+    return object_data
+
 try:
     with dai.Device(pipeline) as device:
         # Camera intrinsics
