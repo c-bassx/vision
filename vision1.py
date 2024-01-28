@@ -6,7 +6,7 @@ import numpy as np
 pipeline = dai.Pipeline()
 
 # Variables
-nn_path = ""  # Specify the path to your neural network model file
+nn_path = ""
 
 # Define sources and outputs
 cam_rgb = pipeline.create(dai.node.ColorCamera)
@@ -44,11 +44,17 @@ def absolute_distance(x, y, z, params):
     j = (y - cy) * z / fy
     return i, j, z
 
+
 with dai.Device(pipeline) as device:
     # Camera intrinsics
     intrinsics = device.readCalibration().getCameraIntrinsics(dai.CameraBoardSocket.RGB)
-    fx, fy, cx, cy = intrinsics[0][0], intrinsics[1][1], intrinsics[0][2], intrinsics[1][2]
-    
+    fx, fy, cx, cy = (
+        intrinsics[0][0],
+        intrinsics[1][1],
+        intrinsics[0][2],
+        intrinsics[1][2],
+    )
+
     # Get the rgb frames, depth frames, and nn data
     q_rgb = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
     q_depth = device.getOutputQueue(name="depth", maxSize=4, blocking=False)
@@ -75,12 +81,18 @@ with dai.Device(pipeline) as device:
             i, j, k = absolute_distance(xmin, ymin, z, params=(fx, fy, cx, cy))
             distance = np.sqrt(i**2 + j**2 + k**2)
 
-            cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), color=(255, 0, 0), thickness=2)
-            cv2.putText(frame, f"3D Pos: ({i:.2f}, {j:.2f}, {k:.2f}), Distance: {distance:.2f} mm", (xmin, ymin - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255))
+            cv2.rectangle(
+                frame, (xmin, ymin), (xmax, ymax), color=(255, 0, 0), thickness=2
+            )
+
+            cv2.putText( 
+                frame, f"3D Pos: ({i:.2f}, {j:.2f}, {k:.2f}), Distance: {distance:.2f} mm",
+                (xmin, ymin - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255),
+            )
 
         cv2.imshow("RGB", frame)
-        
-        if cv2.waitKey(1) == ord('q'):
+
+        if cv2.waitKey(1) == ord("q"):
             break
 
 cv2.destroyAllWindows()
