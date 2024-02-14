@@ -4,11 +4,17 @@ import numpy as np
 import os
 import sys
 
+from networktables import NetworkTables
+
 # Create pipeline
 pipeline = dai.Pipeline()
 
+# Initialize networktables
+NetworkTables.initialize(server="PLACEHOLDER")
+rpiTable = NetworkTables.getTable("raspberrypi")
+
 # Variables
-nn_path = ""
+nn_path = "PLACEHOLDER"
 preview_width = 300
 preview_height = 300
 
@@ -69,6 +75,7 @@ def calculate_angles(x, y, z):
 
     return pitch, yaw, roll
 
+# Possible future use? If not then useless
 def get_object_data(detections, depth_frame, fx, fy, cx, cy):
     object_data = []
     for detection in detections:
@@ -161,6 +168,9 @@ try:
                 )
 
             cv2.imshow("RGB", frame)
+
+            # Post to networktables
+            rpiTable.getEntry("notetrans").setDoubleArray([i, j, k])
 
             if cv2.waitKey(1) == ord("q"):
                 break
