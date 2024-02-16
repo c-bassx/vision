@@ -14,7 +14,7 @@ NetworkTables.initialize(server="PLACEHOLDER")
 rpiTable = NetworkTables.getTable("raspberrypi")
 
 # Variables
-nn_path = "PLACEHOLDER"
+nn_path = "models/model.blob"
 preview_width = 300
 preview_height = 300
 
@@ -26,7 +26,7 @@ if not os.path.isfile(nn_path):
 # Sources and outputs
 cam_rgb = pipeline.create(dai.node.ColorCamera)
 stereo = pipeline.create(dai.node.StereoDepth)
-nn = pipeline.create(dai.node.NeuralNetwork)
+nn = pipeline.create(dai.node.YoloDetectionNetwork)
 
 xout_rgb = pipeline.create(dai.node.XLinkOut)
 xout_depth = pipeline.create(dai.node.XLinkOut)
@@ -49,12 +49,17 @@ stereo.depth.link(xout_depth.input)
 cam_rgb.video.link(xout_rgb.input)
 nn.out.link(xout_nn.input)
 
-# Neural Network
+# Neural Network Configuration
 try:
     nn.setBlobPath(nn_path)
 except:
     print(f"ERROR: File path {nn_path} contains an empty blob.")
     sys.exit(1)
+
+nn.setConfidenceThreshold(0.5)
+nn.setNumClasses(2)
+nn.setCoordinateSize(4)
+nn.setIouThreshold(0.5)
 
 # Functions
 def absolute_distance(x, y, z, params):
