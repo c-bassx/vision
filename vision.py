@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import os
 import sys
+import math
 
 from datetime import datetime
 from networktables import NetworkTables
@@ -16,8 +17,8 @@ rpiTable = NetworkTables.getTable("raspberrypi")
 
 # Variables
 nn_path = "models/model.blob"
-preview_width = 640
-preview_height = 640
+img_width = 640
+img_height = 640
 
 # Check file path integrity
 if not os.path.isfile(nn_path):
@@ -48,7 +49,7 @@ xout_depth.setStreamName("depth")
 xout_nn.setStreamName("nn")
 
 # Properties
-cam_rgb.setPreviewSize(preview_width, preview_height)
+cam_rgb.setPreviewSize(img_width, img_height)
 cam_rgb.setInterleaved(False)
 cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
 
@@ -73,67 +74,25 @@ nn.setCoordinateSize(4)
 nn.setIouThreshold(0.5)
 
 # Functions
-def absolute_distance(x, y, z, params):
-    fx, fy, cx, cy = params
-    i = (x - cx) * z / fx
-    j = (y - cy) * z / fy
-    return i, j, z
+def calculate_angle(offset):
+    cameraHorizontalFOV = np.deg2rad(73.5)
+    depthImageWidth = 1080.0
 
-def calculate_angles(x, y, z):
-    pitch = np.arctan2(y, np.sqrt(x**2 + z**2))  # x-axis rotation
-    yaw = np.arctan2(x, z)                      #  y-axis rotation
-    roll = np.arctan2(np.sqrt(x**2 + y**2), z)  #  z-axis rotation
+    return math.atan(math.tan(cameraHorizontalFOV / 2.0) * offset / (depthImageWidth / 2.0))
 
-    # Convert radians to degrees
-    pitch = np.degrees(pitch)
-    yaw = np.degrees(yaw)
-    roll = np.degrees(roll)
-
-    return pitch, yaw, roll
-
-# Possible future use? If not then useless
-def get_object_data(detections, depth_frame, fx, fy, cx, cy):
-    object_data = []
-    for detection in detections:
-        xmin = int(detection.xmin * 300)
-        ymin = int(detection.ymin * 300)
-        xmax = int(detection.xmax * 300)
-        ymax = int(detection.ymax * 300)
-
-        depth_values = depth_frame[ymin:ymax, xmin:xmax]
-
-        # if depth_values.size == 0 or np.any(depth_values <= 0):
-            # print(f"Warning: Invalid depth data for detection at ({xmin}, {ymin}).")
-            # continue
-
-        z = np.mean(depth_values)
-        i, j, k = absolute_distance(xmin, ymin, z, params=(fx, fy, cx, cy))
-        distance = np.sqrt(i**2 + j**2 + k**2)
-        pitch, yaw, roll = calculate_angles(i, j, k)
-
-        object_data.append({
-            "x": i,
-            "y": j,
-            "z": k,
-            "distance": distance,
-            "pitch": pitch,
-            "yaw": yaw,
-            "roll": roll
-        })
-
-    return object_data
+def addText(text, location, image, color = (255, 255, 255), font = cv2.FONT_HERSHEY_TRIPLEX):
+    cv2.putText(
+        img = frame,
+        org = location,
+        text = text,
+        fontFace = font,
+        fontScale = 0.5,
+        color = color,
+        thickness = 1
+    )
 
 try:
     with dai.Device(pipeline) as device:
-        # Camera intrinsics
-        intrinsics = device.readCalibration().getCameraIntrinsics(dai.CameraBoardSocket.CAM_A)
-        fx, fy, cx, cy = (
-            intrinsics[0][0],
-            intrinsics[1][1],
-            intrinsics[0][2],
-            intrinsics[1][2],
-        )
-
         # Get the rgb frames, depth frames, and nn data
         q_rgb = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
         q_depth = device.getOutputQueue(name="depth", maxSize=4, blocking=False)
@@ -149,69 +108,76 @@ try:
 
             # Decode neural network's output, draw bounding boxes
             frame = in_rgb.getCvFrame()
-            depth_frame = in_depth.getFrame()
+            depth = in_depth.getFrame()
             detections = in_nn.detections
-            for detection in detections:
-                xmin = int(detection.xmin * 300)
-                ymin = int(detection.ymin * 300)
-                xmax = int(detection.xmax * 300)
-                ymax = int(detection.ymax * 300)
 
-                depth_values = depth_frame[ymin:ymax, xmin:xmax]
+            for index, detection in enumerate(detections, start=1):
+                obj_xmin = int(detection.xmin * img_width)
+                obj_ymin = int(detection.ymin * img_height)
+                obj_xmax = int(detection.xmax * img_width)
+                obj_ymax = int(detection.ymax * img_height)
 
-                # if depth_values.size == 0 or np.any(depth_values <= 0):
-                    # print(f"Warning: Invalid depth data for detection at ({xmin}, {ymin}).")
-                    # continue
+                obj_center_x = int((obj_xmin + obj_xmax) / 2)
+                obj_center_y = int((obj_ymin + obj_ymax) / 2)
+                center_depth = depth[obj_center_y, obj_center_x]
 
-                z = np.mean(depth_values)
+                depth_map = depth[obj_ymin:obj_ymax, obj_xmin:obj_xmax]
+                averageDepth = np.mean(depth_map)
 
-                i, j, k = absolute_distance(xmin, ymin, z, params=(fx, fy, cx, cy))
-                distance = np.sqrt(i**2 + j**2 + k**2)
-                pitch, yaw, roll = calculate_angles(i, j, k)
+                midpointWidth = int(depth.shape[1] / 2)
+                midpointHeight = int(depth.shape[0] / 2)
+
+                obj_xOffset = obj_center_x - midpointWidth
+                obj_yOffset = obj_center_y - midpointHeight
+
+                obj_angle_x = calculate_angle(obj_xOffset)
+                obj_angle_y = calculate_angle(obj_yOffset)
+
+                x = z * math.tan(obj_angle_x)
+                y = -z * math.tan(obj_angle_y)
+                z = center_depth # averageDepth works too
+
+                distance = np.sqrt(x*x + y*y + z*z)
 
                 time = datetime.now().strftime("%H:%M:%S")
 
-                print(f"time: {time}")
-                print(f"distance: {distance}")
-                print(f"i: {i}")
-                print(f"j: {j}")
-                print(f"k: {k}")
-
-                print(f"pitch: {pitch}")
-                print(f"yaw: {yaw}")
-                print(f"roll: {roll}")
-
+                # Print values for debugging & status
+                print(f"Time:                   {time}")
+                print(f"Detection #:            {index}")
+                print(f"Number of detections:   {len(detections)}") # hopefully works?
+                print(f"Object center x:        {obj_center_x}")
+                print(f"Object center y:        {obj_center_y}")
+                print(f"Object distance:        {distance}")
+                print(f"Object relative x:      {x}")
+                print(f"Object relative y:      {y}")
+                print(f"Object relative z:      {z}")
+                print(f"Object average depth:   {averageDepth}")
                 print("\n")
 
+                # Draw bounding box
                 cv2.rectangle(
-                    frame, (xmin, ymin), (xmax, ymax), color=(255, 0, 0), thickness=2
+                    img = frame,
+                    pt1 = (obj_xmin, obj_ymin),
+                    pt2 = (obj_xmax, obj_ymax),
+                    color = (0, 255, 0),
+                    thickness = 2
                 )
 
-                cv2.putText( 
-                    frame, f"3D Pos: ({i:.2f}, {j:.2f}, {k:.2f}), Distance: {distance:.2f} mm",
-                    (xmin, ymin - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255),
-                )
+                # Add text to the bounding box
+                # addText("X: {x} mm", (obj_xmin, obj_ymax + 10), frame)
+                # addText("Y: {y} mm", (obj_xmin + 25, obj_ymax + 10), frame)
+                # addText("Z: {z} mm", (obj_xmin + 50, obj_ymax + 10), frame)
 
-                cv2.putText(
-                    frame, f"Pitch: {pitch:.2f}°, Yaw: {yaw:.2f}°, Roll: {roll:.2f}°",
-                    (xmin, ymin - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255)
-                )
+                # Post to networktables
+                rpiTable.getEntry("notetrans").setDoubleArray([x, y, z])
 
             cv2.imshow("RGB", frame)
-
-            # Post to networktables
-            #rpiTable.getEntry("notetrans").setDoubleArray([i, j, k])
 
             if cv2.waitKey(1) == ord("q"):
                 break
 except KeyboardInterrupt:
     print("Program interrupted by user, stopping...")
     sys.exit(1)
-
-#except Exception as e:
-#    print(f"Unexpected error: {e}")
-#    sys.exit(1)
-
 
 cv2.destroyAllWindows()
 print("Resources released, program exited.")
