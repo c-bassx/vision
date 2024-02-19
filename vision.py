@@ -4,6 +4,7 @@ import numpy as np
 import os
 import sys
 
+from datetime import datetime
 from networktables import NetworkTables
 
 # Create pipeline
@@ -15,8 +16,8 @@ rpiTable = NetworkTables.getTable("raspberrypi")
 
 # Variables
 nn_path = "models/model.blob"
-preview_width = 300
-preview_height = 300
+preview_width = 640
+preview_height = 640
 
 # Check file path integrity
 if not os.path.isfile(nn_path):
@@ -27,6 +28,16 @@ if not os.path.isfile(nn_path):
 cam_rgb = pipeline.create(dai.node.ColorCamera)
 stereo = pipeline.create(dai.node.StereoDepth)
 nn = pipeline.create(dai.node.YoloDetectionNetwork)
+
+left = pipeline.create(dai.node.MonoCamera)
+right = pipeline.create(dai.node.MonoCamera)
+
+stereo.setLeftRightCheck(False)
+stereo.setExtendedDisparity(False)
+stereo.setSubpixel(False)
+
+left.out.link(stereo.left)
+right.out.link(stereo.right)
 
 xout_rgb = pipeline.create(dai.node.XLinkOut)
 xout_depth = pipeline.create(dai.node.XLinkOut)
@@ -91,9 +102,9 @@ def get_object_data(detections, depth_frame, fx, fy, cx, cy):
 
         depth_values = depth_frame[ymin:ymax, xmin:xmax]
 
-        if depth_values.size == 0 or np.any(depth_values <= 0):
-            print(f"Warning: Invalid depth data for detection at ({xmin}, {ymin}).")
-            continue
+        # if depth_values.size == 0 or np.any(depth_values <= 0):
+            # print(f"Warning: Invalid depth data for detection at ({xmin}, {ymin}).")
+            # continue
 
         z = np.mean(depth_values)
         i, j, k = absolute_distance(xmin, ymin, z, params=(fx, fy, cx, cy))
@@ -115,7 +126,7 @@ def get_object_data(detections, depth_frame, fx, fy, cx, cy):
 try:
     with dai.Device(pipeline) as device:
         # Camera intrinsics
-        intrinsics = device.readCalibration().getCameraIntrinsics(dai.CameraBoardSocket.RGB)
+        intrinsics = device.readCalibration().getCameraIntrinsics(dai.CameraBoardSocket.CAM_A)
         fx, fy, cx, cy = (
             intrinsics[0][0],
             intrinsics[1][1],
@@ -148,15 +159,29 @@ try:
 
                 depth_values = depth_frame[ymin:ymax, xmin:xmax]
 
-                if depth_values.size == 0 or np.any(depth_values <= 0):
-                    print(f"Warning: Invalid depth data for detection at ({xmin}, {ymin}).")
-                    continue
+                # if depth_values.size == 0 or np.any(depth_values <= 0):
+                    # print(f"Warning: Invalid depth data for detection at ({xmin}, {ymin}).")
+                    # continue
 
                 z = np.mean(depth_values)
 
                 i, j, k = absolute_distance(xmin, ymin, z, params=(fx, fy, cx, cy))
                 distance = np.sqrt(i**2 + j**2 + k**2)
                 pitch, yaw, roll = calculate_angles(i, j, k)
+
+                time = datetime.now().strftime("%H:%M:%S")
+
+                print(f"time: {time}")
+                print(f"distance: {distance}")
+                print(f"i: {i}")
+                print(f"j: {j}")
+                print(f"k: {k}")
+
+                print(f"pitch: {pitch}")
+                print(f"yaw: {yaw}")
+                print(f"roll: {roll}")
+
+                print("\n")
 
                 cv2.rectangle(
                     frame, (xmin, ymin), (xmax, ymax), color=(255, 0, 0), thickness=2
@@ -175,16 +200,17 @@ try:
             cv2.imshow("RGB", frame)
 
             # Post to networktables
-            rpiTable.getEntry("notetrans").setDoubleArray([i, j, k])
+            #rpiTable.getEntry("notetrans").setDoubleArray([i, j, k])
 
             if cv2.waitKey(1) == ord("q"):
                 break
 except KeyboardInterrupt:
     print("Program interrupted by user, stopping...")
     sys.exit(1)
-except Exception as e:
-    print(f"Unexpected error: {e}")
-    sys.exit(1)
+
+#except Exception as e:
+#    print(f"Unexpected error: {e}")
+#    sys.exit(1)
 
 
 cv2.destroyAllWindows()
