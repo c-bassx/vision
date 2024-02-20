@@ -75,8 +75,8 @@ nn.setIouThreshold(0.5)
 
 # Functions
 def calculate_angle(offset):
-    cameraHorizontalFOV = np.deg2rad(73.5)
-    depthImageWidth = 1080.0
+    cameraHorizontalFOV = np.deg2rad(73.5)  # ???
+    depthImageWidth = 1080.0                # ???
 
     return math.atan(math.tan(cameraHorizontalFOV / 2.0) * offset / (depthImageWidth / 2.0))
 
@@ -133,9 +133,9 @@ try:
                 obj_angle_x = calculate_angle(obj_xOffset)
                 obj_angle_y = calculate_angle(obj_yOffset)
 
+                z = averageDepth # averageDepth works too
                 x = z * math.tan(obj_angle_x)
                 y = -z * math.tan(obj_angle_y)
-                z = center_depth # averageDepth works too
 
                 distance = np.sqrt(x*x + y*y + z*z)
 
@@ -148,10 +148,11 @@ try:
                 print(f"Object center x:        {obj_center_x}")
                 print(f"Object center y:        {obj_center_y}")
                 print(f"Object distance:        {distance}")
+                print(f"Object average depth:   {averageDepth}")
+                print("\n")
                 print(f"Object relative x:      {x}")
                 print(f"Object relative y:      {y}")
                 print(f"Object relative z:      {z}")
-                print(f"Object average depth:   {averageDepth}")
                 print("\n")
 
                 # Draw bounding box
