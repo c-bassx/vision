@@ -5,18 +5,16 @@ import depthai as dai
 import numpy as np
 import math
 import time
-# import torch
 import cv2
 
-# from datetime import datetime
-# from networktables import NetworkTables
+from networktables import NetworkTables
 
 # Create pipeline
 pipeline = dai.Pipeline()
 
 # Initialize networktables
-# NetworkTables.initialize(server="PLACEHOLDER") # TODO: Add proper networktables server
-# rpitable = NetworkTables.getTable("raspberrypi")
+NetworkTables.initialize(server="roboRIO-4159-FRC.local")
+rpiTable = NetworkTables.getTable("raspberrypi")
 
 # Global declarations
 nnPath = "models/model.blob"
@@ -94,6 +92,9 @@ with dai.Device(pipeline) as device:
 
     def scaleDown(number):
         return round(number / 1000, 1)
+    
+    def sendToRobot(x, y, z):
+        rpiTable.getEntry("notetrans").setDoubleArray([x, y, z])
 
     def frameNorm(frame, bbox):
         normVals = np.full(len(bbox), frame.shape[0])
@@ -106,6 +107,8 @@ with dai.Device(pipeline) as device:
         for detection in detections:
             bbox = frameNorm(frame, (detection.xmin, detection.ymin, detection.xmax, detection.ymax))
             x, y, z, dist = getCoords(frame, detection, depth)
+            sendToRobot(x, y, z) # send xyz translation over networktables to robot
+
             cv2.putText(frame, f"Note: {x}, {y}, {z}, {dist}", (bbox[0] + 10, bbox[1] + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
             cv2.putText(frame, f"{int(detection.confidence * 100)}%", (bbox[0] + 10, bbox[1] + 40), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
             cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
