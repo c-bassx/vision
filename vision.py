@@ -20,6 +20,7 @@ rpiTable = NetworkTables.getTable("raspberrypi")
 nnPath = "models/model.blob"
 img_width = 384
 img_height = 640
+depthImageWidth = 1080.0 
 
 # Sources and outputs
 camRgb = pipeline.create(dai.node.ColorCamera)
@@ -72,16 +73,12 @@ with dai.Device(pipeline) as device:
     qDet = device.getOutputQueue(name="nn", maxSize=4, blocking=False)
     qDepth = device.getOutputQueue(name="depth", maxSize=4, blocking=False)
 
-    # Get FOV
+    # Get camera FOV
     calibData = device.readCalibration()
     fovRgb = calibData.getFov(dai.CameraBoardSocket.RGB)
-    fovLeft = calibData.getFov(dai.CameraBoardSocket.LEFT)
-    fovRight = calibData.getFov(dai.CameraBoardSocket.RIGHT)
+    cameraHorizontalFOV = np.deg2rad(fovRgb)   
 
     def calculateAngle(offset):
-        cameraHorizontalFOV = np.deg2rad(fovRgb)  
-        depthImageWidth = 1080.0                
-
         return math.atan(math.tan(cameraHorizontalFOV / 2.0) * offset / (depthImageWidth / 2.0))
 
     frame = None
@@ -93,8 +90,9 @@ with dai.Device(pipeline) as device:
     def scaleDown(number):
         return round(number / 1000, 1)
     
-    def sendToRobot(x, y, z):
-        rpiTable.getEntry("notetrans").setDoubleArray([x, y, z])
+    def sendToRobot(coords):
+        if coords:
+            rpiTable.getEntry("notetrans").setDoubleArray(coords[:3])
 
     def frameNorm(frame, bbox):
         normVals = np.full(len(bbox), frame.shape[0])
@@ -107,9 +105,8 @@ with dai.Device(pipeline) as device:
         for detection in detections:
             bbox = frameNorm(frame, (detection.xmin, detection.ymin, detection.xmax, detection.ymax))
             x, y, z, dist = getCoords(frame, detection, depth)
-            sendToRobot(x, y, z) # send xyz translation over networktables to robot
 
-            cv2.putText(frame, f"Note: {x}, {y}, {z}, {dist}", (bbox[0] + 10, bbox[1] + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
+            cv2.putText(frame, f"Note: {scaleDown(x)}, {scaleDown(y)}, {scaleDown(z)}, {scaleDown(dist)}", (bbox[0] + 10, bbox[1] + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
             cv2.putText(frame, f"{int(detection.confidence * 100)}%", (bbox[0] + 10, bbox[1] + 40), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
             cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
 
@@ -120,8 +117,6 @@ with dai.Device(pipeline) as device:
 
         centerX = int((xmin + xmax) / 2)
         centerY = int((ymin + ymax) / 2)
-        centerDepth = depth[centerX, centerY]
-        print(f"centerDepth: {centerDepth}")
 
         depthMap = depth[ymin:ymax, xmin:xmax]
         averageDepth = np.mean(depthMap)
@@ -136,16 +131,19 @@ with dai.Device(pipeline) as device:
         angleY = calculateAngle(yOffset)
 
         z = int(averageDepth)
-        x = int(z * math.tan(angleX))
+        x = int(z * math.tan(angleX)) # TODO: Fix x coordinate
         y = int(-z * math.tan(angleY))
         distance = int(np.sqrt(x*x + y*y + z*z))
 
-        x = scaleDown(x) # TODO: Fix x coordinate
-        y = scaleDown(y)
-        z = scaleDown(z)
-        distance = scaleDown(distance)
-
         return x, y, z, distance
+    
+    def findClosestObject(detections, frame, depth):
+        coords = [getCoords(frame, detection, depth) for detection in detections]
+
+        if coords:
+            closest = min(coords, key=lambda x: x[3])
+            return closest
+        return None
 
     while True:
         inRgb = qRgb.get()
@@ -163,6 +161,10 @@ with dai.Device(pipeline) as device:
 
         if frame is not None:
             displayFrame("rgb", frame, depth)
+
+        if frame is not None and detections:
+            closestObject = findClosestObject(detections, frame, depth)
+            sendToRobot(closestObject)
 
         if cv2.waitKey(1) == ord('q'):
             break
