@@ -49,7 +49,7 @@ camRgb.setPreviewSize(640, 640)
 camRgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
 camRgb.setInterleaved(False)
 camRgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.RGB)
-camRgb.setFps(40)
+camRgb.setFps(30)
 
 # Neural Network Settings
 detectionNetwork.setConfidenceThreshold(0.5)
@@ -80,8 +80,6 @@ with dai.Device(pipeline) as device:
     fovLeft = calibData.getFov(dai.CameraBoardSocket.LEFT)
     fovRight = calibData.getFov(dai.CameraBoardSocket.RIGHT)
 
-    depth = qDepth.get().getFrame()
-
     def calculateAngle(offset):
         cameraHorizontalFOV = np.deg2rad(fovRgb)  
         depthImageWidth = 1080.0                
@@ -102,19 +100,19 @@ with dai.Device(pipeline) as device:
         normVals[::2] = frame.shape[1]
         return (np.clip(np.array(bbox), 0, 1) * normVals).astype(int)
     
-    def displayFrame(name, frame):
+    def displayFrame(name, frame, depth):
         color = (255, 0, 0)
 
         for detection in detections:
             bbox = frameNorm(frame, (detection.xmin, detection.ymin, detection.xmax, detection.ymax))
-            x, y, z, dist = getCoords(frame, detection)
+            x, y, z, dist = getCoords(frame, detection, depth)
             cv2.putText(frame, f"Note: {x}, {y}, {z}, {dist}", (bbox[0] + 10, bbox[1] + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
             cv2.putText(frame, f"{int(detection.confidence * 100)}%", (bbox[0] + 10, bbox[1] + 40), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
             cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
 
         cv2.imshow(name, frame)
 
-    def getCoords(frame, detection):
+    def getCoords(frame, detection, depth):
         xmin, ymin, xmax, ymax = frameNorm(frame, (detection.xmin, detection.ymin, detection.xmax, detection.ymax))
 
         centerX = int((xmin + xmax) / 2)
@@ -139,7 +137,7 @@ with dai.Device(pipeline) as device:
         y = int(-z * math.tan(angleY))
         distance = int(np.sqrt(x*x + y*y + z*z))
 
-        x = scaleDown(x) # offset???
+        x = scaleDown(x) # TODO: Fix x coordinate
         y = scaleDown(y)
         z = scaleDown(z)
         distance = scaleDown(distance)
@@ -149,6 +147,7 @@ with dai.Device(pipeline) as device:
     while True:
         inRgb = qRgb.get()
         inDet = qDet.get()
+        depth = qDepth.get().getFrame() # continuously update depth data
 
         if inRgb is not None:
             frame = inRgb.getCvFrame()
@@ -160,7 +159,7 @@ with dai.Device(pipeline) as device:
             counter += 1
 
         if frame is not None:
-            displayFrame("rgb", frame)
+            displayFrame("rgb", frame, depth)
 
         if cv2.waitKey(1) == ord('q'):
             break
