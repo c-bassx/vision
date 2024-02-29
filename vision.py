@@ -117,6 +117,7 @@ with dai.Device(pipeline) as device:
 
         centerX = int((xmin + xmax) / 2)
         centerY = int((ymin + ymax) / 2)
+        centerDepth = depth[centerY, centerX]
 
         depthMap = depth[ymin:ymax, xmin:xmax]
         averageDepth = np.mean(depthMap)
