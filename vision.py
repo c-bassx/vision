@@ -1,184 +1,166 @@
-import depthai as dai
-import cv2
-import numpy as np
-import os
-import sys
-import math
+# Rewrite of vision code
 
-from datetime import datetime
-from networktables import NetworkTables
+# Necessary imports
+import depthai as dai
+import numpy as np
+import math
+import time
+# import torch
+import cv2
+
+# from datetime import datetime
+# from networktables import NetworkTables
 
 # Create pipeline
 pipeline = dai.Pipeline()
 
 # Initialize networktables
-NetworkTables.initialize(server="PLACEHOLDER")
-rpiTable = NetworkTables.getTable("raspberrypi")
+# NetworkTables.initialize(server="PLACEHOLDER") # TODO: Add proper networktables server
+# rpitable = NetworkTables.getTable("raspberrypi")
 
-# Variables
-nn_path = "models/model.blob"
-img_width = 640
+# Global declarations
+nnPath = "models/model.blob"
+img_width = 384
 img_height = 640
 
-# Check file path integrity
-if not os.path.isfile(nn_path):
-    print(f"ERROR: File path {nn_path} does not exist.")
-    sys.exit(1)
-
 # Sources and outputs
-cam_rgb = pipeline.create(dai.node.ColorCamera)
-stereo = pipeline.create(dai.node.StereoDepth)
-nn = pipeline.create(dai.node.YoloDetectionNetwork)
+camRgb = pipeline.create(dai.node.ColorCamera)
+detectionNetwork = pipeline.create(dai.node.YoloDetectionNetwork)
 
+xOutRgb = pipeline.create(dai.node.XLinkOut)
+nnOut = pipeline.create(dai.node.XLinkOut)
+xOutDepth = pipeline.create(dai.node.XLinkOut)
+
+stereo = pipeline.create(dai.node.StereoDepth)
 left = pipeline.create(dai.node.MonoCamera)
 right = pipeline.create(dai.node.MonoCamera)
 
 stereo.setLeftRightCheck(False)
 stereo.setExtendedDisparity(False)
 stereo.setSubpixel(False)
+stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
 
+xOutRgb.setStreamName("rgb")
+nnOut.setStreamName("nn")
+xOutDepth.setStreamName("depth")
+
+# Properties
+camRgb.setPreviewSize(640, 640)
+camRgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+camRgb.setInterleaved(False)
+camRgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.RGB)
+camRgb.setFps(40)
+
+# Neural Network Settings
+detectionNetwork.setConfidenceThreshold(0.5)
+detectionNetwork.setNumClasses(2)
+detectionNetwork.setCoordinateSize(4)
+detectionNetwork.setIouThreshold(0.5)
+detectionNetwork.setBlobPath(nnPath)
+detectionNetwork.setNumInferenceThreads(2)
+detectionNetwork.input.setBlocking(False)
+
+# Linking
+camRgb.preview.link(detectionNetwork.input)
+detectionNetwork.passthrough.link(xOutRgb.input)
+detectionNetwork.out.link(nnOut.input)
+stereo.depth.link(xOutDepth.input)
 left.out.link(stereo.left)
 right.out.link(stereo.right)
 
-xout_rgb = pipeline.create(dai.node.XLinkOut)
-xout_depth = pipeline.create(dai.node.XLinkOut)
-xout_nn = pipeline.create(dai.node.XLinkOut)
+# Connect to device, start pipeline
+with dai.Device(pipeline) as device:
+    qRgb = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
+    qDet = device.getOutputQueue(name="nn", maxSize=4, blocking=False)
+    qDepth = device.getOutputQueue(name="depth", maxSize=4, blocking=False)
 
-xout_rgb.setStreamName("rgb")
-xout_depth.setStreamName("depth")
-xout_nn.setStreamName("nn")
+    # Get FOV
+    calibData = device.readCalibration()
+    fovRgb = calibData.getFov(dai.CameraBoardSocket.RGB)
+    fovLeft = calibData.getFov(dai.CameraBoardSocket.LEFT)
+    fovRight = calibData.getFov(dai.CameraBoardSocket.RIGHT)
 
-# Properties
-cam_rgb.setPreviewSize(img_width, img_height)
-cam_rgb.setInterleaved(False)
-cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
+    depth = qDepth.get().getFrame()
 
-stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
+    def calculateAngle(offset):
+        cameraHorizontalFOV = np.deg2rad(fovRgb)  
+        depthImageWidth = 1080.0                
 
-# Linking
-cam_rgb.preview.link(nn.input)
-stereo.depth.link(xout_depth.input)
-cam_rgb.video.link(xout_rgb.input)
-nn.out.link(xout_nn.input)
+        return math.atan(math.tan(cameraHorizontalFOV / 2.0) * offset / (depthImageWidth / 2.0))
 
-# Neural Network Configuration
-try:
-    nn.setBlobPath(nn_path)
-except:
-    print(f"ERROR: File path {nn_path} contains an empty blob.")
-    sys.exit(1)
+    frame = None
+    detections = []
+    startTime = time.monotonic()
+    counter = 0
+    color2 = (255, 255, 255)
 
-nn.setConfidenceThreshold(0.5)
-nn.setNumClasses(2)
-nn.setCoordinateSize(4)
-nn.setIouThreshold(0.5)
+    def scaleDown(number):
+        return round(number / 1000, 1)
 
-# Functions
-def calculate_angle(offset):
-    cameraHorizontalFOV = np.deg2rad(73.5)  # ???
-    depthImageWidth = 1080.0                # ???
+    def frameNorm(frame, bbox):
+        normVals = np.full(len(bbox), frame.shape[0])
+        normVals[::2] = frame.shape[1]
+        return (np.clip(np.array(bbox), 0, 1) * normVals).astype(int)
+    
+    def displayFrame(name, frame):
+        color = (255, 0, 0)
 
-    return math.atan(math.tan(cameraHorizontalFOV / 2.0) * offset / (depthImageWidth / 2.0))
+        for detection in detections:
+            bbox = frameNorm(frame, (detection.xmin, detection.ymin, detection.xmax, detection.ymax))
+            x, y, z, dist = getCoords(frame, detection)
+            cv2.putText(frame, f"Note: {x}, {y}, {z}, {dist}", (bbox[0] + 10, bbox[1] + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
+            cv2.putText(frame, f"{int(detection.confidence * 100)}%", (bbox[0] + 10, bbox[1] + 40), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
+            cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
 
-def addText(text, location, image, color = (255, 255, 255), font = cv2.FONT_HERSHEY_TRIPLEX):
-    cv2.putText(
-        img = frame,
-        org = location,
-        text = text,
-        fontFace = font,
-        fontScale = 0.5,
-        color = color,
-        thickness = 1
-    )
+        cv2.imshow(name, frame)
 
-try:
-    with dai.Device(pipeline) as device:
-        # Get the rgb frames, depth frames, and nn data
-        q_rgb = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
-        q_depth = device.getOutputQueue(name="depth", maxSize=4, blocking=False)
-        q_nn = device.getOutputQueue(name="nn", maxSize=4, blocking=False)
+    def getCoords(frame, detection):
+        xmin, ymin, xmax, ymax = frameNorm(frame, (detection.xmin, detection.ymin, detection.xmax, detection.ymax))
 
-        while True:
-            in_rgb = q_rgb.get()
-            in_depth = q_depth.get()
-            in_nn = q_nn.get()
+        centerX = int((xmin + xmax) / 2)
+        centerY = int((ymin + ymax) / 2)
+        centerDepth = depth[centerX, centerY]
+        print(f"centerDepth: {centerDepth}")
 
-            if in_rgb is None or in_depth is None or in_nn is None:
-                continue
+        depthMap = depth[ymin:ymax, xmin:xmax]
+        averageDepth = np.mean(depthMap)
 
-            # Decode neural network's output, draw bounding boxes
-            frame = in_rgb.getCvFrame()
-            depth = in_depth.getFrame()
-            detections = in_nn.detections
+        midpointWidth = int(depth.shape[1] / 2)
+        midpointHeight = int(depth.shape[0] / 2)
 
-            for index, detection in enumerate(detections, start=1):
-                obj_xmin = int(detection.xmin * img_width)
-                obj_ymin = int(detection.ymin * img_height)
-                obj_xmax = int(detection.xmax * img_width)
-                obj_ymax = int(detection.ymax * img_height)
+        xOffset = centerX - midpointWidth
+        yOffset = centerY - midpointHeight
 
-                obj_center_x = int((obj_xmin + obj_xmax) / 2)
-                obj_center_y = int((obj_ymin + obj_ymax) / 2)
-                center_depth = depth[obj_center_y, obj_center_x]
+        angleX = calculateAngle(xOffset)
+        angleY = calculateAngle(yOffset)
 
-                depth_map = depth[obj_ymin:obj_ymax, obj_xmin:obj_xmax]
-                averageDepth = np.mean(depth_map)
+        z = int(averageDepth)
+        x = int(z * math.tan(angleX))
+        y = int(-z * math.tan(angleY))
+        distance = int(np.sqrt(x*x + y*y + z*z))
 
-                midpointWidth = int(depth.shape[1] / 2)
-                midpointHeight = int(depth.shape[0] / 2)
+        x = scaleDown(x) # offset???
+        y = scaleDown(y)
+        z = scaleDown(z)
+        distance = scaleDown(distance)
 
-                obj_xOffset = obj_center_x - midpointWidth
-                obj_yOffset = obj_center_y - midpointHeight
+        return x, y, z, distance
 
-                obj_angle_x = calculate_angle(obj_xOffset)
-                obj_angle_y = calculate_angle(obj_yOffset)
+    while True:
+        inRgb = qRgb.get()
+        inDet = qDet.get()
 
-                z = averageDepth # averageDepth works too
-                x = z * math.tan(obj_angle_x)
-                y = -z * math.tan(obj_angle_y)
+        if inRgb is not None:
+            frame = inRgb.getCvFrame()
+            cv2.putText(frame, "NN fps: {:.2f}".format(counter / (time.monotonic() - startTime)),
+                        (2, frame.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color2)
+            
+        if inDet is not None:
+            detections = inDet.detections
+            counter += 1
 
-                distance = np.sqrt(x*x + y*y + z*z)
+        if frame is not None:
+            displayFrame("rgb", frame)
 
-                time = datetime.now().strftime("%H:%M:%S")
-
-                # Print values for debugging & status
-                print(f"Time:                   {time}")
-                print(f"Detection #:            {index}")
-                print(f"Number of detections:   {len(detections)}") # hopefully works?
-                print(f"Object center x:        {obj_center_x}")
-                print(f"Object center y:        {obj_center_y}")
-                print(f"Object distance:        {distance}")
-                print(f"Object average depth:   {averageDepth}")
-                print("\n")
-                print(f"Object relative x:      {x}")
-                print(f"Object relative y:      {y}")
-                print(f"Object relative z:      {z}")
-                print("\n")
-
-                # Draw bounding box
-                cv2.rectangle(
-                    img = frame,
-                    pt1 = (obj_xmin, obj_ymin),
-                    pt2 = (obj_xmax, obj_ymax),
-                    color = (0, 255, 0),
-                    thickness = 2
-                )
-
-                # Add text to the bounding box
-                # addText("X: {x} mm", (obj_xmin, obj_ymax + 10), frame)
-                # addText("Y: {y} mm", (obj_xmin + 25, obj_ymax + 10), frame)
-                # addText("Z: {z} mm", (obj_xmin + 50, obj_ymax + 10), frame)
-
-                # Post to networktables
-                rpiTable.getEntry("notetrans").setDoubleArray([x, y, z])
-
-            cv2.imshow("RGB", frame)
-
-            if cv2.waitKey(1) == ord("q"):
-                break
-except KeyboardInterrupt:
-    print("Program interrupted by user, stopping...")
-    sys.exit(1)
-
-cv2.destroyAllWindows()
-print("Resources released, program exited.")
+        if cv2.waitKey(1) == ord('q'):
+            break
